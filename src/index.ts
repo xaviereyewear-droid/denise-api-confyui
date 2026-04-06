@@ -12,6 +12,10 @@ import logger from './lib/logger.js';
 import router from './routes/index.js';
 import { ipLimiter } from './middleware/rateLimit.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { initializeDatabase, closeDatabase, getDatabaseInfo } from './db/database.js';
+import { runMigrations } from './db/migrate.js';
+import { createJobRepository } from './repositories/jobRepository.js';
+import { initializeJobRecovery } from './services/jobRecovery.js';
 
 /**
  * Inicializar Express
@@ -69,10 +73,22 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 /**
+ * INICIALIZAR BANCO DE DADOS
+ */
+logger.info('Inicializando banco de dados SQLite...');
+const db = initializeDatabase();
+runMigrations(db);
+
+// Criar repository e recovery service
+const jobRepository = createJobRepository(db);
+const jobRecovery = initializeJobRecovery(jobRepository);
+
+/**
  * INICIAR SERVIDOR
  */
-const server = app.listen(config.apiPort, config.apiHost, () => {
+const server = app.listen(config.apiPort, config.apiHost, async () => {
   const tunnelUrl = process.env.CLOUDFLARE_TUNNEL_URL || '';
+  const dbInfo = getDatabaseInfo();
 
   logger.info(
     {
@@ -81,9 +97,17 @@ const server = app.listen(config.apiPort, config.apiHost, () => {
       comfyui: config.comfyui.baseUrl,
       env: config.nodeEnv,
       tunnel: tunnelUrl || 'não configurado',
+      database: dbInfo,
     },
     '✅ Servidor iniciado com sucesso!'
   );
+
+  // Executar job recovery (não bloqueia startup)
+  try {
+    await jobRecovery.recoverIncompleteJobs();
+  } catch (error) {
+    logger.warn({ error }, 'Aviso: Job recovery encontrou erro, continuando');
+  }
 
   const maxWidth = 50;
   const localUrl = `http://${config.apiHost}:${config.apiPort}`;
@@ -109,6 +133,7 @@ ${publicUrl ? `║  ${publicUrl.padEnd(maxWidth - 1)}║\n` : ''}║  🎨 Comfy
 process.on('SIGTERM', () => {
   logger.info('SIGTERM recebido. Encerrando servidor...');
   server.close(() => {
+    closeDatabase();
     logger.info('Servidor encerrado.');
     process.exit(0);
   });
@@ -117,6 +142,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   logger.info('SIGINT recebido. Encerrando servidor...');
   server.close(() => {
+    closeDatabase();
     logger.info('Servidor encerrado.');
     process.exit(0);
   });

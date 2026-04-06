@@ -2,181 +2,225 @@
  * SERVIÇO DE GERENCIAMENTO DE JOBS
  *
  * Responsável por:
- * - Armazenar estado dos jobs
+ * - Armazenar estado dos jobs (em BD via repository)
  * - Atualizar status
  * - Recuperar resultado
  * - Limpeza automática
+ *
+ * ETAPA 9: Agora persiste em SQLite via JobRepository
  */
 
 import { promises as fs } from 'fs';
-import { join } from 'path';
 import config from '../config/env.js';
 import logger from '../lib/logger.js';
-import { Job, JobStatus } from '../types/index.js';
-import { ComfyUIHistory } from '../types/comfyui.js';
+import { Job as OldJob, JobStatus } from '../types/index.js';
 import { ApiError } from '../middleware/errorHandler.js';
-
-/**
- * Storage em memória para MVP
- * TODO: Migrar para SQLite/PostgreSQL em produção
- */
-class JobStorage {
-  private jobs: Map<string, Job> = new Map();
-
-  create(job: Job): void {
-    this.jobs.set(job.id, job);
-  }
-
-  get(jobId: string): Job | undefined {
-    return this.jobs.get(jobId);
-  }
-
-  update(jobId: string, partial: Partial<Job>): void {
-    const job = this.jobs.get(jobId);
-    if (!job) return;
-
-    Object.assign(job, partial);
-  }
-
-  delete(jobId: string): void {
-    this.jobs.delete(jobId);
-  }
-
-  getAll(): Job[] {
-    return Array.from(this.jobs.values());
-  }
-
-  getByStatus(status: JobStatus): Job[] {
-    return this.getAll().filter(job => job.status === status);
-  }
-}
+import { Job } from '../models/Job.js';
+import { JobRepository } from '../repositories/jobRepository.js';
+import { getDatabase } from '../db/database.js';
+import { createJobRepository } from '../repositories/jobRepository.js';
 
 /**
  * Serviço de Jobs
+ * Combina cache em memória + persistência em BD
  */
 class JobService {
-  private storage: JobStorage;
+  private repository: JobRepository;
+  private jobCache: Map<string, Job> = new Map(); // Cache em memória para performance
 
   constructor() {
-    this.storage = new JobStorage();
+    // Lazy initialization para evitar dependências circulares
+    this.repository = null as any;
     this.startCleanupInterval();
   }
 
   /**
+   * Inicializar repository (chamado no startup)
+   */
+  initRepository(): void {
+    if (!this.repository) {
+      const db = getDatabase();
+      this.repository = createJobRepository(db);
+      logger.info('JobService integrado com SQLite');
+    }
+  }
+
+  /**
+   * Garantir repository inicializado
+   */
+  private ensureRepository(): JobRepository {
+    if (!this.repository) {
+      this.initRepository();
+    }
+    return this.repository;
+  }
+
+  /**
    * Criar novo job
+   * IMPORTANTE: Mantém mesma interface, mas agora persiste em BD
    */
   createJob(
     jobId: string,
     workflowType: string,
     inputImagePath: string,
-    comfyuiPromptId: string
+    initialStatus: JobStatus = 'pending'
   ): Job {
-    const job: Job = {
-      id: jobId,
-      status: 'queued',
-      workflowType: workflowType as any,
-      inputImagePath,
-      comfyuiPromptId,
-      createdAt: new Date(),
-      progress: 0,
-    };
+    try {
+      const repository = this.ensureRepository();
 
-    this.storage.create(job);
+      // Criar job no BD
+      const job = repository.create(jobId, {
+        workflow: workflowType as any,
+        inputImagePath,
+      });
 
-    logger.info(
-      { jobId, workflowType, promptId: comfyuiPromptId },
-      'Job criado'
-    );
+      // Atualize status se necessário
+      if (initialStatus !== 'pending') {
+        repository.setStatus(jobId, initialStatus);
+        job.status = initialStatus;
+      }
 
-    return job;
+      // Cache em memória
+      this.jobCache.set(jobId, job);
+
+      logger.info(
+        { jobId, workflowType, status: initialStatus },
+        'Job criado'
+      );
+
+      return job;
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao criar job');
+      throw error;
+    }
   }
 
   /**
    * Obter job por ID
+   * Tenta cache primeiro, depois BD
    */
-  getJob(jobId: string): Job | undefined {
-    return this.storage.get(jobId);
-  }
+  getJob(jobId: string): Job | null {
+    try {
+      // Verificar cache
+      if (this.jobCache.has(jobId)) {
+        return this.jobCache.get(jobId)!;
+      }
 
-  /**
-   * Atualizar status do job
-   */
-  updateJobStatus(jobId: string, status: JobStatus, progress: number = 0): void {
-    this.storage.update(jobId, { status, progress, updatedAt: new Date() });
+      // Buscar no BD
+      const repository = this.ensureRepository();
+      const job = repository.getById(jobId);
+
+      if (job) {
+        // Cachear
+        this.jobCache.set(jobId, job);
+        return job;
+      }
+
+      return null;
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao obter job');
+      return null;
+    }
   }
 
   /**
    * Marcar job como iniciado
    */
   startJob(jobId: string): void {
-    this.storage.update(jobId, {
-      status: 'processing',
-      startedAt: new Date(),
-      progress: 0,
-    });
+    try {
+      const repository = this.ensureRepository();
+      repository.setStartedAt(jobId);
+
+      // Invalidar cache
+      this.jobCache.delete(jobId);
+
+      logger.info({ jobId }, 'Job iniciado');
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao iniciar job');
+    }
   }
 
   /**
    * Marcar job como completo
    */
   completeJob(jobId: string, outputImagePath: string): void {
-    this.storage.update(jobId, {
-      status: 'completed',
-      completedAt: new Date(),
-      outputImagePath,
-      progress: 100,
-    });
+    try {
+      const repository = this.ensureRepository();
+      repository.setCompletedAt(jobId, outputImagePath);
 
-    logger.info({ jobId }, 'Job concluído com sucesso');
+      // Invalidar cache
+      this.jobCache.delete(jobId);
+
+      logger.info({ jobId }, 'Job concluído com sucesso');
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao completar job');
+    }
   }
 
   /**
    * Marcar job como falhado
    */
   failJob(jobId: string, errorMessage: string): void {
-    this.storage.update(jobId, {
-      status: 'failed',
-      completedAt: new Date(),
-      errorMessage,
-      progress: 0,
-    });
+    try {
+      const repository = this.ensureRepository();
+      repository.setError(jobId, errorMessage);
 
-    logger.warn({ jobId, error: errorMessage }, 'Job falhou');
+      // Invalidar cache
+      this.jobCache.delete(jobId);
+
+      logger.warn({ jobId, error: errorMessage }, 'Job falhou');
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao falhar job');
+    }
   }
 
   /**
    * Cancelar job
    */
   cancelJob(jobId: string): void {
-    const job = this.getJob(jobId);
+    try {
+      const job = this.getJob(jobId);
 
-    if (!job) {
-      throw new ApiError(404, 'JOB_NOT_FOUND', 'Job não encontrado');
+      if (!job) {
+        throw new ApiError(404, 'JOB_NOT_FOUND', 'Job não encontrado');
+      }
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        throw new ApiError(
+          409,
+          'CANNOT_CANCEL',
+          'Job já está concluído. Não pode ser cancelado.'
+        );
+      }
+
+      const repository = this.ensureRepository();
+      repository.cancel(jobId);
+
+      // Invalidar cache
+      this.jobCache.delete(jobId);
+
+      logger.info({ jobId }, 'Job cancelado');
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao cancelar job');
+      throw error;
     }
-
-    if (job.status === 'completed' || job.status === 'failed') {
-      throw new ApiError(
-        409,
-        'CANNOT_CANCEL',
-        'Job já está concluído. Não pode ser cancelado.'
-      );
-    }
-
-    this.storage.update(jobId, {
-      status: 'cancelled',
-      completedAt: new Date(),
-    });
-
-    logger.info({ jobId }, 'Job cancelado');
   }
 
   /**
    * Atualizar progresso
    */
   updateProgress(jobId: string, progress: number): void {
-    if (progress < 0 || progress > 100) return;
+    try {
+      if (progress < 0 || progress > 100) return;
 
-    this.storage.update(jobId, { progress });
+      const repository = this.ensureRepository();
+      repository.setProgress(jobId, progress);
+
+      // Invalidar cache para próxima leitura
+      this.jobCache.delete(jobId);
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao atualizar progresso');
+    }
   }
 
   /**
@@ -193,39 +237,15 @@ class JobService {
    * Executar limpeza
    */
   private async cleanupOldJobs(): Promise<void> {
-    const now = new Date();
-    const maxAgeMs = 24 * 60 * 60 * 1000; // 24 horas
+    try {
+      const repository = this.ensureRepository();
+      const deleted = repository.cleanupOldJobs(1); // Manter 1 dia apenas
 
-    const jobs = this.storage.getAll();
-
-    for (const job of jobs) {
-      // Pular jobs em progresso
-      if (job.status === 'queued' || job.status === 'processing') {
-        continue;
+      if (deleted > 0) {
+        logger.info({ deleted }, 'Cleanup de jobs antigos executado');
       }
-
-      // Verificar idade
-      const ageMs = now.getTime() - job.completedAt!.getTime();
-
-      if (ageMs > maxAgeMs) {
-        try {
-          // Deletar arquivo se existir
-          if (job.outputImagePath) {
-            try {
-              await fs.unlink(job.outputImagePath);
-            } catch {
-              // Arquivo pode já ter sido deletado
-            }
-          }
-
-          // Remover job do storage
-          this.storage.delete(job.id);
-
-          logger.info({ jobId: job.id }, 'Job antigo removido');
-        } catch (error) {
-          logger.warn({ jobId: job.id, error }, 'Erro ao limpar job');
-        }
-      }
+    } catch (error) {
+      logger.warn({ error }, 'Erro ao fazer cleanup de jobs');
     }
   }
 
@@ -233,25 +253,49 @@ class JobService {
    * Obter posição na fila
    */
   getQueuePosition(jobId: string): number {
-    const queuedJobs = this.storage.getByStatus('queued');
-    const index = queuedJobs.findIndex(j => j.id === jobId);
+    try {
+      const repository = this.ensureRepository();
+      const queuedJobs = repository.list({ status: 'queued' });
+      const index = queuedJobs.findIndex((j) => j.id === jobId);
 
-    return index >= 0 ? index + 1 : -1;
+      return index >= 0 ? index + 1 : -1;
+    } catch (error) {
+      logger.error({ error, jobId }, 'Erro ao obter posição na fila');
+      return -1;
+    }
   }
 
   /**
    * Obter estatísticas
    */
   getStats() {
-    const jobs = this.storage.getAll();
+    try {
+      const repository = this.ensureRepository();
+      const stats = repository.countByStatus();
 
-    return {
-      total: jobs.length,
-      queued: jobs.filter(j => j.status === 'queued').length,
-      processing: jobs.filter(j => j.status === 'processing').length,
-      completed: jobs.filter(j => j.status === 'completed').length,
-      failed: jobs.filter(j => j.status === 'failed').length,
-    };
+      return {
+        total:
+          stats.pending +
+          stats.queued +
+          stats.processing +
+          stats.completed +
+          stats.failed +
+          stats.cancelled,
+        queued: stats.queued,
+        processing: stats.processing,
+        completed: stats.completed,
+        failed: stats.failed,
+      };
+    } catch (error) {
+      logger.error({ error }, 'Erro ao obter stats');
+      return {
+        total: 0,
+        queued: 0,
+        processing: 0,
+        completed: 0,
+        failed: 0,
+      };
+    }
   }
 }
 

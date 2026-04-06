@@ -2,7 +2,7 @@
  * TIPOS GLOBAIS DA APLICAÇÃO
  */
 
-export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+export type JobStatus = 'pending' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
 export type WorkflowType = 'catalog' | 'portrait' | 'custom';
 
