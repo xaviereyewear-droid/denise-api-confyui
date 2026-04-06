@@ -16,6 +16,11 @@ import { initializeDatabase, closeDatabase, getDatabaseInfo } from './db/databas
 import { runMigrations } from './db/migrate.js';
 import { createJobRepository } from './repositories/jobRepository.js';
 import { initializeJobRecovery } from './services/jobRecovery.js';
+import requestLoggerMiddleware from './middleware/requestLogger.js';
+import securityHeadersMiddleware from './middleware/securityHeaders.js';
+import { metrics } from './services/metricsService.js';
+import { initializeGracefulShutdown } from './services/shutdownService.js';
+import jobService from './services/jobService.js';
 
 /**
  * Inicializar Express
@@ -25,6 +30,9 @@ const app = express();
 /**
  * MIDDLEWARES GLOBAIS
  */
+
+// Security headers (deve ser primeiro)
+app.use(securityHeadersMiddleware);
 
 // Logging de requisições
 app.use((req, _res, next) => {
@@ -58,12 +66,29 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// Request logger (registra duração + métricas)
+app.use(requestLoggerMiddleware);
+
 // Rate limiting global
 app.use(ipLimiter);
 
 /**
  * ROTAS
  */
+
+// Endpoint de métricas (Prometheus format)
+app.get('/metrics', async (_req, res) => {
+  try {
+    const metricsText = await metrics.getMetrics();
+    res.set('Content-Type', metrics.getContentType());
+    res.send(metricsText);
+  } catch (error) {
+    logger.error({ error }, 'Erro ao obter métricas');
+    res.status(500).send('Erro ao obter métricas');
+  }
+});
+
+// Rotas principais
 app.use('/', router);
 
 /**
@@ -83,10 +108,20 @@ runMigrations(db);
 const jobRepository = createJobRepository(db);
 const jobRecovery = initializeJobRecovery(jobRepository);
 
+// Inicializar jobService com repository
+jobService.initRepository();
+
+/**
+ * INICIALIZAR GRACEFUL SHUTDOWN
+ */
+let server: any;
+
 /**
  * INICIAR SERVIDOR
  */
-const server = app.listen(config.apiPort, config.apiHost, async () => {
+server = app.listen(config.apiPort, config.apiHost, async () => {
+  // Registrar graceful shutdown handlers
+  initializeGracefulShutdown(server);
   const tunnelUrl = process.env.CLOUDFLARE_TUNNEL_URL || '';
   const dbInfo = getDatabaseInfo();
 
@@ -109,19 +144,41 @@ const server = app.listen(config.apiPort, config.apiHost, async () => {
     logger.warn({ error }, 'Aviso: Job recovery encontrou erro, continuando');
   }
 
+  // Atualizar métricas periodicamente (a cada 10 segundos)
+  setInterval(() => {
+    const stats = jobService.getStats();
+    metrics.updateJobsPerStatus({
+      pending: jobRepository.list({ status: 'pending' }).length,
+      queued: stats.queued,
+      processing: stats.processing,
+      completed: stats.completed,
+      failed: stats.failed,
+      cancelled: 0,
+    });
+    metrics.updateActiveJobs(stats.queued + stats.processing);
+
+    const dbInfo = getDatabaseInfo();
+    if (dbInfo) {
+      metrics.setDatabaseSize(parseFloat(dbInfo.size_mb));
+      metrics.setTotalJobsInDatabase(dbInfo.jobs);
+    }
+  }, 10000);
+
   const maxWidth = 50;
   const localUrl = `http://${config.apiHost}:${config.apiPort}`;
   const publicUrl = tunnelUrl ? `🌐 Público  → ${tunnelUrl}` : '';
 
   console.log(`
 ╔${'═'.repeat(maxWidth)}╗
-║${'API ComfyUI - ETAPA 8 (Cloudflare Tunnel)'.padStart((maxWidth + 'API ComfyUI - ETAPA 8 (Cloudflare Tunnel)'.length) / 2).padEnd(maxWidth)}║
+║${'🚀 API ComfyUI - ETAPA 9 Session 2'.padStart((maxWidth + '🚀 API ComfyUI - ETAPA 9 Session 2'.length) / 2).padEnd(maxWidth)}║
 ╠${'═'.repeat(maxWidth)}╣
 ║                                                  ║
 ║  📡 Local   → ${localUrl.padEnd(maxWidth - 15)}║
 ${publicUrl ? `║  ${publicUrl.padEnd(maxWidth - 1)}║\n` : ''}║  🎨 ComfyUI → ${config.comfyui.baseUrl.padEnd(maxWidth - 15)}║
+║  📊 Métricas → /metrics (Prometheus format)      ║
 ║  📝 Logs    → ${config.logLevel.padEnd(maxWidth - 15)}║
 ║  🔐 Auth    → ${(config.apiKey.substring(0, 15) + '...').padEnd(maxWidth - 15)}║
+║  🛡️  Security → Headers + Rate Limiting Active   ║
 ║                                                  ║
 ╚${'═'.repeat(maxWidth)}╝
   `);
