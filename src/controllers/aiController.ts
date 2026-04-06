@@ -74,42 +74,10 @@ export const submitJob = asyncHandler(async (req: Request, res: Response) => {
 
     logger.info({ jobId, uploadPath }, 'Upload salvo');
 
-    // 5. Criar job no storage
-    jobService.createJob(jobId, workflow, uploadPath, 'pending');
-
-    // 6. Criar workflow ComfyUI
-    const workflowObject = comfyuiService.createWorkflow({
-      type: workflow as any,
-      inputImagePath: uploadPath,
-      options: { quality: 'high' },
-    });
-
-    // 7. Verificar conectividade ComfyUI
-    const isConnected = await comfyuiService.healthCheck();
-
-    if (!isConnected) {
-      jobService.failJob(jobId, 'ComfyUI não está respondendo');
-
-      throw new ApiError(
-        503,
-        'COMFYUI_OFFLINE',
-        'ComfyUI não está disponível. Tente novamente em alguns momentos.'
-      );
-    }
-
-    // 8. Enviar para ComfyUI
-    let promptId: string;
-
-    try {
-      promptId = await comfyuiService.submitWorkflow(workflowObject);
-    } catch (error) {
-      jobService.failJob(jobId, 'Erro ao submeter workflow ao ComfyUI');
-      throw error;
-    }
-
-    // 9. Atualizar job com promptId
-    jobService.startJob(jobId);
-    jobService.createJob(jobId, workflow, uploadPath, promptId);
+    // 5. Criar job + enfileirar em BullMQ (async, não bloqueia)
+    // ETAPA 10: Desacoplamento - job é criado em SQLite e enfileirado
+    // O processamento em ComfyUI é feito por worker, não aqui
+    await jobService.createJob(jobId, workflow, uploadPath, 'pending');
 
     logger.info(
       { jobId, promptId, workflow },

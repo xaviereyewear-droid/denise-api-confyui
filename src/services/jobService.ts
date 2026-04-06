@@ -57,18 +57,18 @@ class JobService {
 
   /**
    * Criar novo job
-   * IMPORTANTE: Mantém mesma interface, mas agora persiste em BD
+   * ETAPA 10: Agora enfileira em BullMQ em vez de processar direto
    */
-  createJob(
+  async createJob(
     jobId: string,
     workflowType: string,
     inputImagePath: string,
     initialStatus: JobStatus = 'pending'
-  ): Job {
+  ): Promise<Job> {
     try {
       const repository = this.ensureRepository();
 
-      // Criar job no BD
+      // Criar job no BD (fonte de verdade)
       const job = repository.create(jobId, {
         workflow: workflowType as any,
         inputImagePath,
@@ -83,6 +83,24 @@ class JobService {
       // Cache em memória
       this.jobCache.set(jobId, job);
 
+      // NOVO: Enfileirar em BullMQ (desacoplado)
+      try {
+        const queueService = await this.getQueueService();
+        if (queueService) {
+          await queueService.enqueueJob({
+            jobId,
+            workflow: workflowType,
+            inputImagePath,
+          });
+          logger.debug({ jobId }, 'Job enfileirado em BullMQ');
+        }
+      } catch (queueError) {
+        logger.warn(
+          { jobId, error: queueError },
+          'Aviso: Falha ao enfileirar em BullMQ, continuando'
+        );
+      }
+
       logger.info(
         { jobId, workflowType, status: initialStatus },
         'Job criado'
@@ -92,6 +110,19 @@ class JobService {
     } catch (error) {
       logger.error({ error, jobId }, 'Erro ao criar job');
       throw error;
+    }
+  }
+
+  /**
+   * Obter queue service (lazy)
+   */
+  private async getQueueService() {
+    try {
+      // Import dinâmico para evitar circular dependency
+      const { getQueueService } = await import('./queueService.js');
+      return getQueueService();
+    } catch {
+      return null;
     }
   }
 

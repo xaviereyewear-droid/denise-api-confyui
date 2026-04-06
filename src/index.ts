@@ -21,6 +21,8 @@ import securityHeadersMiddleware from './middleware/securityHeaders.js';
 import { metrics } from './services/metricsService.js';
 import { initializeGracefulShutdown } from './services/shutdownService.js';
 import jobService from './services/jobService.js';
+import { initializeRedis, closeRedis, getRedisInfo } from './services/redisService.js';
+import { initializeQueueService, getQueueService } from './services/queueService.js';
 
 /**
  * Inicializar Express
@@ -112,6 +114,24 @@ const jobRecovery = initializeJobRecovery(jobRepository);
 jobService.initRepository();
 
 /**
+ * INICIALIZAR REDIS + BULLMQ
+ */
+logger.info('Inicializando Redis...');
+let queueService: ReturnType<typeof getQueueService> | null = null;
+try {
+  await initializeRedis();
+
+  // Concurrency: 1 ou 2 jobs simultâneos
+  const concurrency = parseInt(process.env.QUEUE_CONCURRENCY || '1', 10);
+  initializeQueueService(concurrency);
+  queueService = getQueueService();
+
+  logger.info({ concurrency }, '✅ Redis + BullMQ inicializado');
+} catch (error) {
+  logger.warn({ error }, '⚠️  Aviso: Redis/Queue não disponível, continuando sem fila');
+}
+
+/**
  * INICIALIZAR GRACEFUL SHUTDOWN
  */
 let server: any;
@@ -145,7 +165,7 @@ server = app.listen(config.apiPort, config.apiHost, async () => {
   }
 
   // Atualizar métricas periodicamente (a cada 10 segundos)
-  setInterval(() => {
+  setInterval(async () => {
     const stats = jobService.getStats();
     metrics.updateJobsPerStatus({
       pending: jobRepository.list({ status: 'pending' }).length,
@@ -157,6 +177,21 @@ server = app.listen(config.apiPort, config.apiHost, async () => {
     });
     metrics.updateActiveJobs(stats.queued + stats.processing);
 
+    // Adicionar métricas da queue (se disponível)
+    if (queueService) {
+      try {
+        const queueStats = await queueService.getQueueStats();
+        if (queueStats) {
+          logger.debug(
+            { queueStats },
+            'Queue stats'
+          );
+        }
+      } catch (error) {
+        logger.debug({ error }, 'Erro ao obter queue stats');
+      }
+    }
+
     const dbInfo = getDatabaseInfo();
     if (dbInfo) {
       metrics.setDatabaseSize(parseFloat(dbInfo.size_mb));
@@ -164,22 +199,25 @@ server = app.listen(config.apiPort, config.apiHost, async () => {
     }
   }, 10000);
 
-  const maxWidth = 50;
+  const maxWidth = 52;
   const localUrl = `http://${config.apiHost}:${config.apiPort}`;
   const publicUrl = tunnelUrl ? `🌐 Público  → ${tunnelUrl}` : '';
+  const redisStatus = queueService ? '✅ Redis/Queue' : '⚠️  Sem Queue';
+  const concurrency = process.env.QUEUE_CONCURRENCY || '1';
 
   console.log(`
 ╔${'═'.repeat(maxWidth)}╗
-║${'🚀 API ComfyUI - ETAPA 9 Session 2'.padStart((maxWidth + '🚀 API ComfyUI - ETAPA 9 Session 2'.length) / 2).padEnd(maxWidth)}║
+║${'🚀 API ComfyUI - ETAPA 10 Session 1'.padStart((maxWidth + '🚀 API ComfyUI - ETAPA 10 Session 1'.length) / 2).padEnd(maxWidth)}║
 ╠${'═'.repeat(maxWidth)}╣
-║                                                  ║
-║  📡 Local   → ${localUrl.padEnd(maxWidth - 15)}║
-${publicUrl ? `║  ${publicUrl.padEnd(maxWidth - 1)}║\n` : ''}║  🎨 ComfyUI → ${config.comfyui.baseUrl.padEnd(maxWidth - 15)}║
-║  📊 Métricas → /metrics (Prometheus format)      ║
-║  📝 Logs    → ${config.logLevel.padEnd(maxWidth - 15)}║
-║  🔐 Auth    → ${(config.apiKey.substring(0, 15) + '...').padEnd(maxWidth - 15)}║
-║  🛡️  Security → Headers + Rate Limiting Active   ║
-║                                                  ║
+║                                                    ║
+║  📡 Local   → ${localUrl.padEnd(maxWidth - 15)}  ║
+${publicUrl ? `║  ${publicUrl.padEnd(maxWidth - 1)}║\n` : ''}║  🎨 ComfyUI → ${config.comfyui.baseUrl.padEnd(maxWidth - 15)}  ║
+║  📊 Métricas → /metrics (Prometheus)             ║
+║  ${redisStatus.padEnd(maxWidth - 3)}║
+║  📝 Logs    → ${config.logLevel.padEnd(maxWidth - 17)}  ║
+║  🔐 Auth    → ${(config.apiKey.substring(0, 13) + '...').padEnd(maxWidth - 17)}  ║
+║  ⚙️  Concurrency → ${concurrency} job(s) simultâneos  ║
+║                                                    ║
 ╚${'═'.repeat(maxWidth)}╝
   `);
 });
@@ -187,20 +225,34 @@ ${publicUrl ? `║  ${publicUrl.padEnd(maxWidth - 1)}║\n` : ''}║  🎨 Comfy
 /**
  * TRATAMENTO DE SINAIS PARA SHUTDOWN GRACIOSO
  */
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   logger.info('SIGTERM recebido. Encerrando servidor...');
-  server.close(() => {
+  server.close(async () => {
+    // Fechar queue
+    if (queueService) {
+      await queueService.stop();
+    }
+    // Fechar Redis
+    await closeRedis();
+    // Fechar banco
     closeDatabase();
-    logger.info('Servidor encerrado.');
+    logger.info('✅ Servidor encerrado.');
     process.exit(0);
   });
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   logger.info('SIGINT recebido. Encerrando servidor...');
-  server.close(() => {
+  server.close(async () => {
+    // Fechar queue
+    if (queueService) {
+      await queueService.stop();
+    }
+    // Fechar Redis
+    await closeRedis();
+    // Fechar banco
     closeDatabase();
-    logger.info('Servidor encerrado.');
+    logger.info('✅ Servidor encerrado.');
     process.exit(0);
   });
 });

@@ -82,6 +82,47 @@ services:
       - api-network
 
   # ═════════════════════════════════════════════════════════════════════════
+  # Redis (Fila distribuída - BullMQ)
+  # Necessário para ETAPA 10 (Job Queue)
+  # ═════════════════════════════════════════════════════════════════════════
+
+  redis:
+    image: redis:7-alpine
+
+    container_name: api-comfyui-redis
+
+    ports:
+      - "6379:6379"
+
+    command:
+      - redis-server
+      - "--appendonly"
+      - "yes"  # Persistência (RDB + AOF)
+      - "--appendfsync"
+      - "everysec"
+
+    volumes:
+      - redis-data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+    networks:
+      - api-network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ═════════════════════════════════════════════════════════════════════════
   # ComfyUI (opcional - se rodar em Docker também)
   # Descomente se quiser rodar ComfyUI em Container
   # ═════════════════════════════════════════════════════════════════════════
@@ -113,4 +154,7 @@ networks:
 
 volumes:
   storage:
+    driver: local
+
+  redis-data:
     driver: local
