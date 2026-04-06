@@ -1,0 +1,63 @@
+# ╔═══════════════════════════════════════════════════════════════╗
+# ║  CLOUDFLARE TUNNEL CONFIGURATION                              ║
+# ║  Expõe API (3000) para internet via Cloudflare Tunnel         ║
+# ║  ComfyUI (8188) permanece completamente fechado               ║
+# ╚═══════════════════════════════════════════════════════════════╝
+
+# Nome do tunnel (deve estar criado via: cloudflared tunnel create api-comfyui)
+tunnel: api-comfyui
+
+# ⚠️ PASSO 1: Obter o UUID do tunnel
+# Execute: cloudflared tunnel list
+# Copie o UUID (coluna ID) e cole abaixo
+credentials-file: C:\Users\DELL\.cloudflared\<COLE_O_UUID_AQUI>.json
+
+# Configurações de conexão
+protocol: quic
+
+# ═════════════════════════════════════════════════════════════════
+# ROTAS DE INGRESSO (IMPORTANTE!)
+# ═════════════════════════════════════════════════════════════════
+# Apenas a API (3000) é exposta
+# ComfyUI (8188) é automaticamente bloqueado
+# Qualquer outra porta retorna 404
+
+ingress:
+  # ✅ Rota 1: Health Check (endpoints de status)
+  - hostname: api-comfyui.example.com
+    path: /health*
+    service: http://localhost:3000
+    originRequest:
+      noTLSVerify: false
+
+  # ✅ Rota 2: Stats endpoint
+  - hostname: api-comfyui.example.com
+    path: /stats
+    service: http://localhost:3000
+    originRequest:
+      noTLSVerify: false
+
+  # ✅ Rota 3: AI endpoints (principal)
+  - hostname: api-comfyui.example.com
+    path: /api/ai/*
+    service: http://localhost:3000
+    originRequest:
+      noTLSVerify: false
+      timeout: 300s  # 5 minutos para processamento de imagens
+
+  # ❌ Rota 4: Padrão - rejeitar tudo mais
+  # Isso garante que ComfyUI (8188) e qualquer outra porta NÃO são acessíveis
+  - service: http_status:404
+
+# ═════════════════════════════════════════════════════════════════
+# CONFIGURAÇÕES DE LOGGING
+# ═════════════════════════════════════════════════════════════════
+
+logLevel: info
+logfile: ./logs/cloudflared.log
+
+# ═════════════════════════════════════════════════════════════════
+# MÉTRICAS (opcional)
+# ═════════════════════════════════════════════════════════════════
+
+metrics: 127.0.0.1:41515
