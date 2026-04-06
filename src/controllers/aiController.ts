@@ -80,8 +80,8 @@ export const submitJob = asyncHandler(async (req: Request, res: Response) => {
     await jobService.createJob(jobId, workflow, uploadPath, 'pending');
 
     logger.info(
-      { jobId, promptId, workflow },
-      'Job submetido ao ComfyUI com sucesso'
+      { jobId, workflow },
+      'Job criado e enfileirado com sucesso'
     );
 
     // 10. Retornar resposta 202
@@ -169,9 +169,11 @@ export const getStatus = asyncHandler(async (req: Request, res: Response) => {
             completed_at: new Date().toISOString(),
             result: {
               image_url: `/api/ai/result/${jobId}`,
-              processing_time: this.formatDuration(
-                new Date().getTime() - job.startedAt!.getTime()
-              ),
+              processing_time: job.startedAt
+                ? formatDuration(
+                    new Date().getTime() - job.startedAt.getTime()
+                  )
+                : 'unknown',
             },
           };
 
@@ -239,11 +241,11 @@ export const getStatus = asyncHandler(async (req: Request, res: Response) => {
     created_at: job.createdAt.toISOString(),
     started_at: job.startedAt?.toISOString(),
     completed_at: job.completedAt?.toISOString(),
-    result: job.status === 'completed'
+    result: job.status === 'completed' && job.completedAt && job.startedAt
       ? {
           image_url: `/api/ai/result/${jobId}`,
-          processing_time: this.formatDuration(
-            job.completedAt!.getTime() - job.startedAt!.getTime()
+          processing_time: formatDuration(
+            job.completedAt.getTime() - job.startedAt.getTime()
           ),
         }
       : undefined,

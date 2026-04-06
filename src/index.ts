@@ -21,6 +21,7 @@ import securityHeadersMiddleware from './middleware/securityHeaders.js';
 import { metrics } from './services/metricsService.js';
 import { initializeGracefulShutdown } from './services/shutdownService.js';
 import jobService from './services/jobService.js';
+import storageService from './services/storageService.js';
 import { initializeRedis, closeRedis, getRedisInfo } from './services/redisService.js';
 import { initializeQueueService, getQueueService } from './services/queueService.js';
 
@@ -100,36 +101,64 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 /**
- * INICIALIZAR BANCO DE DADOS
+ * INICIALIZAR SERVIÇOS (async)
  */
-logger.info('Inicializando banco de dados SQLite...');
-const db = initializeDatabase();
-runMigrations(db);
-
-// Criar repository e recovery service
-const jobRepository = createJobRepository(db);
-const jobRecovery = initializeJobRecovery(jobRepository);
-
-// Inicializar jobService com repository
-jobService.initRepository();
-
-/**
- * INICIALIZAR REDIS + BULLMQ
- */
-logger.info('Inicializando Redis...');
 let queueService: ReturnType<typeof getQueueService> | null = null;
-try {
-  await initializeRedis();
+let jobRepository: any = null;
+let jobRecovery: any = null;
 
-  // Concurrency: 1 ou 2 jobs simultâneos
-  const concurrency = parseInt(process.env.QUEUE_CONCURRENCY || '1', 10);
-  initializeQueueService(concurrency);
-  queueService = getQueueService();
+(async () => {
+  try {
+    /**
+     * INICIALIZAR STORAGE (FileSystem, MinIO ou S3)
+     */
+    try {
+      logger.info('Inicializando Storage Service...');
+      await storageService.initialize();
+      const storageInfo = await storageService.getInfo();
+      logger.info(
+        { type: storageInfo.type, available: storageInfo.available },
+        `✅ Storage inicializado`
+      );
+    } catch (error) {
+      logger.error({ error }, '⚠️  Erro ao inicializar Storage');
+    }
 
-  logger.info({ concurrency }, '✅ Redis + BullMQ inicializado');
-} catch (error) {
-  logger.warn({ error }, '⚠️  Aviso: Redis/Queue não disponível, continuando sem fila');
-}
+    /**
+     * INICIALIZAR BANCO DE DADOS
+     */
+    logger.info('Inicializando banco de dados SQLite...');
+    const db = initializeDatabase();
+    runMigrations(db);
+
+    // Criar repository e recovery service
+    jobRepository = createJobRepository(db);
+    jobRecovery = initializeJobRecovery(jobRepository);
+
+    // Inicializar jobService com repository
+    jobService.initRepository();
+
+    /**
+     * INICIALIZAR REDIS + BULLMQ
+     */
+    logger.info('Inicializando Redis...');
+    try {
+      await initializeRedis();
+
+      // Concurrency: 1 ou 2 jobs simultâneos
+      const concurrency = parseInt(process.env.QUEUE_CONCURRENCY || '1', 10);
+      initializeQueueService(concurrency);
+      queueService = getQueueService();
+
+      logger.info({ concurrency }, '✅ Redis + BullMQ inicializado');
+    } catch (error) {
+      logger.warn({ error }, '⚠️  Aviso: Redis/Queue não disponível, continuando sem fila');
+    }
+  } catch (error) {
+    logger.error({ error }, '❌ Erro crítico durante inicialização');
+    process.exit(1);
+  }
+})();
 
 /**
  * INICIALIZAR GRACEFUL SHUTDOWN

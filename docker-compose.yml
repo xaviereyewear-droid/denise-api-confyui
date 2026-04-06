@@ -123,6 +123,50 @@ services:
         max-file: "3"
 
   # ═════════════════════════════════════════════════════════════════════════
+  # MinIO (Storage Centralizado - ETAPA A3)
+  # S3-compatible object storage
+  # Para trocar para S3 real depois: apenas mudar credenciais
+  # ═════════════════════════════════════════════════════════════════════════
+
+  minio:
+    image: minio/minio:latest
+
+    container_name: api-comfyui-minio
+
+    ports:
+      # API S3
+      - "9000:9000"
+      # Console Web (opcional, para debug)
+      - "9001:9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+    command: server /data --console-address ":9001"
+
+    volumes:
+      - minio-data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+    networks:
+      - api-network
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ═════════════════════════════════════════════════════════════════════════
   # ComfyUI (opcional - se rodar em Docker também)
   # Descomente se quiser rodar ComfyUI em Container
   # ═════════════════════════════════════════════════════════════════════════
@@ -157,4 +201,7 @@ volumes:
     driver: local
 
   redis-data:
+    driver: local
+
+  minio-data:
     driver: local

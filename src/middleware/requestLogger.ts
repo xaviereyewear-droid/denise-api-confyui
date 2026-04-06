@@ -40,7 +40,7 @@ export function requestLoggerMiddleware(
 
     // Log estruturado
     const logLevel = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
-    const logFn = logger[logLevel as keyof typeof logger];
+    const logFn = logger[logLevel as keyof typeof logger] as any;
 
     logFn(
       {

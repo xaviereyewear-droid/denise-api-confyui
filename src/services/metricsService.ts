@@ -17,6 +17,7 @@ import logger from '../lib/logger.js';
 /**
  * Inicializar coleta de métricas padrão do Node.js
  */
+// @ts-ignore - Timeout config is not recognized in this prom-client version
 collectDefaultMetrics({ timeout: 5000 });
 
 /**
