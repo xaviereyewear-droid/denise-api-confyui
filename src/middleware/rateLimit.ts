@@ -31,7 +31,7 @@ export const ipLimiter = rateLimit({
  */
 export const uploadLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minuto
-  max: 3, // máx 3 uploads por minuto
+  max: 20, // máx 20 uploads por minuto (aumentado para testes)
   message: {
     status: 'error',
     code: 'UPLOAD_LIMIT_EXCEEDED',

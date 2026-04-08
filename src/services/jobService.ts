@@ -83,23 +83,26 @@ class JobService {
       // Cache em memória
       this.jobCache.set(jobId, job);
 
-      // NOVO: Enfileirar em BullMQ (desacoplado)
-      try {
-        const queueService = await this.getQueueService();
-        if (queueService) {
-          await queueService.enqueueJob({
-            jobId,
-            workflow: workflowType,
-            inputImagePath,
-          });
-          logger.debug({ jobId }, 'Job enfileirado em BullMQ');
+      // NOVO: Enfileirar em BullMQ (desacoplado, não-bloqueante)
+      // Fire-and-forget: executa em background, não bloqueia resposta HTTP
+      (async () => {
+        try {
+          const queueService = await this.getQueueService();
+          if (queueService) {
+            await queueService.enqueueJob({
+              jobId,
+              workflow: workflowType,
+              inputImagePath,
+            });
+            logger.debug({ jobId }, 'Job enfileirado em BullMQ');
+          }
+        } catch (queueError) {
+          logger.warn(
+            { jobId, error: queueError },
+            'Aviso: Falha ao enfileirar em BullMQ, continuando'
+          );
         }
-      } catch (queueError) {
-        logger.warn(
-          { jobId, error: queueError },
-          'Aviso: Falha ao enfileirar em BullMQ, continuando'
-        );
-      }
+      })(); // IIFE invocado sem await
 
       logger.info(
         { jobId, workflowType, status: initialStatus },

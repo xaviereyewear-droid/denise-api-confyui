@@ -52,7 +52,7 @@ async function uploadFile() {
           ...form.getHeaders(),
           'Authorization': `Bearer ${API_KEY}`,
         },
-        timeout: 120000, // 2 minutes
+        timeout: 300000, // 5 minutes
       }
     );
 
