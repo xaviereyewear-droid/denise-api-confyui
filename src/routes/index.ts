@@ -18,25 +18,97 @@ const router = Router();
 router.use('/', aiRoutes);
 
 /**
- * HEALTH CHECK - Sem autenticação
- * Verificar se a API está funcionando
+ * HEALTH CHECK - Ready Probe (Kubernetes)
+ * Apenas verifica se a API está UP (sem dependências externas)
+ */
+router.get('/health/ready', healthLimiter, async (_req: Request, res: Response) => {
+  try {
+    // Verificar apenas recursos locais
+    const storageInfo = await storageService.getInfo();
+
+    const isReady = storageInfo.available;
+
+    res.status(isReady ? 200 : 503).json({
+      status: isReady ? 'ready' : 'not_ready',
+      timestamp: new Date().toISOString(),
+      checks: {
+        storage: storageInfo.available ? 'ok' : 'down',
+      },
+    });
+
+    if (isReady) {
+      logger.debug('Ready probe OK');
+    } else {
+      logger.warn('Ready probe falhou - storage não disponível');
+    }
+  } catch (error) {
+    logger.error({ err: error }, 'Erro no ready probe');
+
+    res.status(503).json({
+      status: 'not_ready',
+      timestamp: new Date().toISOString(),
+      message: 'Storage Service não disponível',
+    });
+  }
+});
+
+/**
+ * HEALTH CHECK - Liveness Probe (Kubernetes)
+ * Verifica dependências externas (ComfyUI, etc)
+ */
+router.get('/health/live', healthLimiter, async (_req: Request, res: Response) => {
+  try {
+    const comfyuiHealthy = await comfyuiService.healthCheck();
+
+    res.status(comfyuiHealthy ? 200 : 503).json({
+      status: comfyuiHealthy ? 'alive' : 'unhealthy',
+      timestamp: new Date().toISOString(),
+      checks: {
+        comfyui: comfyuiHealthy ? 'connected' : 'disconnected',
+      },
+      message: comfyuiHealthy
+        ? 'API viva e ComfyUI acessível'
+        : 'API viva mas ComfyUI offline',
+    });
+
+    logger.debug(`Liveness probe: ComfyUI ${comfyuiHealthy ? 'OK' : 'DOWN'}`);
+  } catch (error) {
+    logger.error({ err: error }, 'Erro no liveness probe');
+
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      message: 'Erro ao verificar ComfyUI',
+    });
+  }
+});
+
+/**
+ * HEALTH CHECK - Completo (compatível com versão anterior)
+ * Agrupa ready + live checks
  */
 router.get('/health', healthLimiter, async (_req: Request, res: Response) => {
   try {
-    // Verificar conectividade de cada serviço
     const comfyuiHealthy = await comfyuiService.healthCheck();
+    const storageInfo = await storageService.getInfo();
     const storageUsage = await storageService.getDiskUsage();
     const jobStats = jobService.getStats();
 
-    const allHealthy = comfyuiHealthy;
+    const isReady = storageInfo.available;
+    const isAlive = comfyuiHealthy;
+    const overallHealthy = isReady && isAlive;
 
-    res.status(allHealthy ? 200 : 503).json({
-      status: allHealthy ? 'healthy' : 'unhealthy',
+    res.status(overallHealthy ? 200 : 503).json({
+      status: overallHealthy ? 'healthy' : 'unhealthy',
       timestamp: new Date().toISOString(),
+      checks: {
+        ready: isReady ? 'ok' : 'down',
+        live: isAlive ? 'ok' : 'down',
+      },
       services: {
         api: 'running',
-        comfyui: comfyuiHealthy ? 'connected' : 'disconnected',
-        storage: storageUsage.total >= 0 ? 'accessible' : 'inaccessible',
+        comfyui: isAlive ? 'connected' : 'disconnected',
+        storage: isReady ? 'accessible' : 'inaccessible',
       },
       details: {
         jobs: jobStats,
@@ -46,9 +118,9 @@ router.get('/health', healthLimiter, async (_req: Request, res: Response) => {
       },
     });
 
-    logger.debug('Health check completo');
+    logger.debug(`Health check: ${overallHealthy ? 'healthy' : 'unhealthy'}`);
   } catch (error) {
-    logger.error({ error }, 'Erro no health check');
+    logger.error({ err: error }, 'Erro no health check');
 
     res.status(503).json({
       status: 'unhealthy',
@@ -59,7 +131,7 @@ router.get('/health', healthLimiter, async (_req: Request, res: Response) => {
 });
 
 /**
- * HEALTH CHECK - ComfyUI Status
+ * HEALTH CHECK - ComfyUI Status (Alias para /health/live)
  * Verificar apenas a conectividade com ComfyUI
  */
 router.get('/health/comfyui', healthLimiter, async (_req: Request, res: Response) => {
@@ -80,7 +152,7 @@ router.get('/health/comfyui', healthLimiter, async (_req: Request, res: Response
 
     logger.debug(`ComfyUI health: ${isConnected ? 'OK' : 'DOWN'}`);
   } catch (error) {
-    logger.error({ error }, 'Erro ao verificar ComfyUI');
+    logger.error({ err: error }, 'Erro ao verificar ComfyUI');
 
     res.status(503).json({
       status: 'error',
@@ -97,7 +169,16 @@ router.get('/health/comfyui', healthLimiter, async (_req: Request, res: Response
 router.get('/stats', healthLimiter, async (_req: Request, res: Response) => {
   try {
     const jobStats = jobService.getStats();
-    const storageUsage = await storageService.getDiskUsage();
+    let storageUsage = { uploads: 0, outputs: 0, total: 0 };
+
+    try {
+      storageUsage = await storageService.getDiskUsage();
+    } catch (error) {
+      logger.warn(
+        { err: error },
+        'Erro ao obter disk usage, usando 0'
+      );
+    }
 
     res.status(200).json({
       timestamp: new Date().toISOString(),
@@ -111,11 +192,12 @@ router.get('/stats', healthLimiter, async (_req: Request, res: Response) => {
 
     logger.debug('Stats endpoint acessado');
   } catch (error) {
-    logger.error({ error }, 'Erro ao obter stats');
+    logger.error({ err: error }, 'Erro ao obter stats');
 
     res.status(500).json({
       status: 'error',
       message: 'Erro ao obter estatísticas',
+      timestamp: new Date().toISOString(),
     });
   }
 });

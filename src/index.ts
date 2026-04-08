@@ -7,6 +7,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import pinoHTTP from 'pino-http';
 import config from './config/env.js';
 import logger from './lib/logger.js';
 import router from './routes/index.js';
@@ -16,7 +17,6 @@ import { initializeDatabase, closeDatabase, getDatabaseInfo } from './db/databas
 import { runMigrations } from './db/migrate.js';
 import { createJobRepository } from './repositories/jobRepository.js';
 import { initializeJobRecovery } from './services/jobRecovery.js';
-import requestLoggerMiddleware from './middleware/requestLogger.js';
 import securityHeadersMiddleware from './middleware/securityHeaders.js';
 import { metrics } from './services/metricsService.js';
 import { initializeGracefulShutdown } from './services/shutdownService.js';
@@ -69,8 +69,18 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Request logger (registra duração + métricas)
-app.use(requestLoggerMiddleware);
+// HTTP Request Logger (padrão Pino)
+app.use(pinoHTTP({
+  logger,
+  customLogLevel: (req, res, err) => {
+    if (res.statusCode >= 500) return 'error';
+    if (res.statusCode >= 400) return 'warn';
+    return 'info';
+  },
+  customErrorMessage: (req, res, err) => {
+    return err?.message || 'Unknown error';
+  },
+}));
 
 // Rate limiting global
 app.use(ipLimiter);
@@ -296,7 +306,9 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   logger.error({ reason }, 'Promise rejection não tratada');
-  process.exit(1);
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
 });
 
 export default app;

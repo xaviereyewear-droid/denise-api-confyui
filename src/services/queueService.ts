@@ -11,12 +11,14 @@
  * Redis/BullMQ = fila de processamento
  */
 
-import { Queue, Worker, QueueScheduler } from 'bullmq';
+import bullmq from 'bullmq';
 import { getRedis } from './redisService.js';
 import logger from '../lib/logger.js';
 import jobService from './jobService.js';
 import comfyuiService from './comfyuiService.js';
 import { metrics } from './metricsService.js';
+
+const { Queue, Worker } = bullmq;
 
 /**
  * Interface do job na fila
@@ -31,9 +33,10 @@ export interface QueueJobData {
  * Queue Service
  */
 export class QueueService {
-  private queue: Queue<QueueJobData> | null = null;
-  private worker: Worker<QueueJobData> | null = null;
-  private scheduler: QueueScheduler | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private queue: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private worker: any = null;
   private isProcessing = false;
 
   /**
@@ -55,11 +58,6 @@ export class QueueService {
       // Criar queue
       // @ts-ignore - Type mismatch entre versões de BullMQ
       this.queue = new Queue<QueueJobData>(queueName, { connection: redis });
-
-      // Criar scheduler (para retry automático)
-      // @ts-ignore
-      this.scheduler = new QueueScheduler(queueName, { connection: redis });
-      await this.scheduler.waitUntilReady();
 
       // Criar worker com concurrency
       // @ts-ignore - BullMQ type mismatch
@@ -99,7 +97,7 @@ export class QueueService {
     /**
      * Job completado com sucesso
      */
-    this.worker.on('completed', (job) => {
+    this.worker.on('completed', (job: any) => {
       logger.info({ jobId: job.data.jobId }, '✅ Job completado (worker)');
       metrics.recordCircuitBreakerTrip('job-completed');
 
@@ -113,7 +111,7 @@ export class QueueService {
     /**
      * Job falhado
      */
-    this.worker.on('failed', (job, error) => {
+    this.worker.on('failed', (job: any, error: any) => {
       if (!job) return;
 
       logger.error(
@@ -145,7 +143,7 @@ export class QueueService {
     /**
      * Job iniciado
      */
-    this.worker.on('active', (job) => {
+    this.worker.on('active', (job: any) => {
       logger.info(
         { jobId: job.data.jobId },
         '🔄 Job iniciado no worker'
@@ -162,7 +160,7 @@ export class QueueService {
     /**
      * Erro no worker (não job específico)
      */
-    this.worker.on('error', (error) => {
+    this.worker.on('error', (error: Error) => {
       logger.error({ error }, '❌ Erro no worker');
     });
   }
@@ -320,10 +318,6 @@ export class QueueService {
 
       if (this.worker) {
         await this.worker.close();
-      }
-
-      if (this.scheduler) {
-        await this.scheduler.close();
       }
 
       if (this.queue) {

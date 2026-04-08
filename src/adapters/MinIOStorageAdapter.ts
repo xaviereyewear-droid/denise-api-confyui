@@ -26,25 +26,42 @@ export class MinIOStorageAdapter implements StorageAdapter {
   private bucket: string;
   private uploadPrefix: string;
   private outputPrefix: string;
-  private initialized: boolean = false;
 
   constructor(config: {
     endpoint: string;
     accessKey: string;
     secretKey: string;
     bucket: string;
+    port?: number;
     useSSL?: boolean;
     region?: string;
   }) {
-    const { endpoint, accessKey, secretKey, bucket, useSSL = false, region = 'us-east-1' } = config;
+    const { endpoint, accessKey, secretKey, bucket, port = 9000, useSSL = false, region = 'us-east-1' } = config;
 
     this.bucket = bucket;
     this.uploadPrefix = 'uploads/';
     this.outputPrefix = 'outputs/';
 
+    // Parse endpoint (remover porta se incluída)
+    let endpointHost = endpoint;
+    let finalPort = port;
+
+    if (endpoint.includes(':')) {
+      const [host, portStr] = endpoint.split(':');
+      endpointHost = host;
+      finalPort = parseInt(portStr, 10);
+      logger.debug(
+        { endpoint, host, port: finalPort },
+        'Porta extraída do endpoint'
+      );
+    }
+
     // Inicializar cliente MinIO
+    // IMPORTANTE: endPoint NÃO deve incluir porta
+    // Porta deve ser passada como campo separado
     this.client = new Minio.Client({
-      endPoint: endpoint,
+      endPoint: endpointHost,
+      port: finalPort,
       accessKey,
       secretKey,
       useSSL,
@@ -52,7 +69,7 @@ export class MinIOStorageAdapter implements StorageAdapter {
     });
 
     logger.info(
-      { endpoint, bucket, useSSL },
+      { host: endpointHost, port: finalPort, bucket, useSSL },
       'MinIOStorageAdapter criado'
     );
   }
@@ -70,7 +87,6 @@ export class MinIOStorageAdapter implements StorageAdapter {
         logger.info({ bucket: this.bucket }, 'Bucket criado');
       }
 
-      this.initialized = true;
       logger.info({ bucket: this.bucket }, 'MinIOStorageAdapter inicializado');
     } catch (error) {
       logger.error({ error }, 'Erro ao inicializar MinIOStorageAdapter');
@@ -320,8 +336,6 @@ export class MinIOStorageAdapter implements StorageAdapter {
    */
   async close?(): Promise<void> {
     // MinIO client não mantém conexão persistente
-    // Apenas resetar flag
-    this.initialized = false;
     logger.info('MinIOStorageAdapter fechado');
   }
 

@@ -13,12 +13,10 @@
  * - STORAGE_MINIO_SSL=false
  */
 
-import config from '../config/env.js';
 import logger from '../lib/logger.js';
 import { StorageAdapter } from '../types/storage.js';
 import { FileSystemStorageAdapter } from '../adapters/FileSystemStorageAdapter.js';
 import { MinIOStorageAdapter } from '../adapters/MinIOStorageAdapter.js';
-import { ApiError } from '../middleware/errorHandler.js';
 
 /**
  * Serviço de Storage com abstração
@@ -39,7 +37,8 @@ class StorageService {
       switch (storageType) {
         case 'minio':
           this.adapter = new MinIOStorageAdapter({
-            endpoint: process.env.STORAGE_MINIO_ENDPOINT || 'localhost:9000',
+            endpoint: process.env.STORAGE_MINIO_ENDPOINT || 'localhost',
+            port: parseInt(process.env.STORAGE_MINIO_PORT || '9000', 10),
             accessKey: process.env.STORAGE_MINIO_ACCESS_KEY || 'minioadmin',
             secretKey: process.env.STORAGE_MINIO_SECRET_KEY || 'minioadmin',
             bucket: process.env.STORAGE_MINIO_BUCKET || 'comfyui',

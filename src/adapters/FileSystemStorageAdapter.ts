@@ -16,7 +16,6 @@ import { ApiError } from '../middleware/errorHandler.js';
 import { StorageAdapter } from '../types/storage.js';
 
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
-const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 
 /**
  * Implementação de StorageAdapter para FileSystem local
@@ -79,7 +78,7 @@ export class FileSystemStorageAdapter implements StorageAdapter {
   ): Promise<string> {
     try {
       // Validar
-      this.validateFile(originalFilename, buffer);
+      this.validateFile(originalFilename);
 
       // Gerar nome seguro
       const ext = this.getExtension(originalFilename);
@@ -208,8 +207,10 @@ export class FileSystemStorageAdapter implements StorageAdapter {
     total: number;
   }> {
     try {
-      const uploadSize = await this.getDirSize(this.uploadDir);
-      const outputSize = await this.getDirSize(this.outputDir);
+      const [uploadSize, outputSize] = await Promise.all([
+        this.getDirSize(this.uploadDir),
+        this.getDirSize(this.outputDir),
+      ]);
 
       return {
         uploads: uploadSize,
@@ -217,7 +218,11 @@ export class FileSystemStorageAdapter implements StorageAdapter {
         total: uploadSize + outputSize,
       };
     } catch (error) {
-      logger.warn({ error }, 'Erro ao calcular uso de disco');
+      logger.warn(
+        { err: error },
+        'Erro ao calcular uso de disco'
+      );
+      // Retornar 0 como fallback - diretórios podem estar inacessíveis
       return { uploads: 0, outputs: 0, total: 0 };
     }
   }
@@ -260,24 +265,49 @@ export class FileSystemStorageAdapter implements StorageAdapter {
     let totalSize = 0;
 
     try {
+      // Check se diretório existe
       if (!existsSync(dirpath)) {
+        logger.debug({ dir: dirpath }, 'Diretório não existe, usando 0');
         return 0;
       }
 
-      const files = await fs.readdir(dirpath);
+      // Ler diretório com tratamento de erro
+      let files: string[] = [];
+      try {
+        files = await fs.readdir(dirpath);
+      } catch (error) {
+        logger.warn(
+          { dir: dirpath, err: error },
+          'Erro ao ler diretório'
+        );
+        return 0;
+      }
 
+      // Calcular tamanho de cada arquivo/subdiretório
       for (const file of files) {
-        const filepath = join(dirpath, file);
-        const stats = await fs.stat(filepath);
+        try {
+          const filepath = join(dirpath, file);
+          const stats = await fs.stat(filepath);
 
-        if (stats.isDirectory()) {
-          totalSize += await this.getDirSize(filepath);
-        } else {
-          totalSize += stats.size;
+          if (stats.isDirectory()) {
+            totalSize += await this.getDirSize(filepath);
+          } else {
+            totalSize += stats.size;
+          }
+        } catch (error) {
+          // Log mas não falha - arquivo pode ter sido deletado durante iteração
+          logger.debug(
+            { file, err: error },
+            'Erro ao processar arquivo em getDirSize'
+          );
         }
       }
-    } catch {
-      // Diretório pode não existir
+    } catch (error) {
+      logger.error(
+        { dir: dirpath, err: error },
+        'Erro inesperado em getDirSize'
+      );
+      return 0;
     }
 
     return totalSize;
@@ -286,7 +316,7 @@ export class FileSystemStorageAdapter implements StorageAdapter {
   /**
    * Validar arquivo antes de salvar
    */
-  private validateFile(filename: string, buffer: Buffer): void {
+  private validateFile(filename: string): void {
     // Validar extension
     const ext = this.getExtension(filename).toLowerCase();
 

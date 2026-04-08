@@ -15,6 +15,9 @@ services:
     ports:
       - "3000:3000"
 
+    env_file:
+      - .env
+
     environment:
       # Server
       NODE_ENV: development
@@ -25,11 +28,19 @@ services:
       # No Windows com Docker Desktop: usar host.docker.internal
       # No Linux: usar IP da máquina ou 'comfyui' se em mesmo network
       COMFYUI_HOST: host.docker.internal
-      COMFYUI_PORT: 8188
+      COMFYUI_PORT: 8000
       COMFYUI_TIMEOUT: 300000
 
       # Storage
+      STORAGE_TYPE: minio
       STORAGE_PATH: ./storage
+      STORAGE_MINIO_ENDPOINT: minio
+      STORAGE_MINIO_PORT: "9000"
+      STORAGE_MINIO_ACCESS_KEY: minioadmin
+      STORAGE_MINIO_SECRET_KEY: minioadmin
+      STORAGE_MINIO_BUCKET: comfyui
+      STORAGE_MINIO_SSL: "false"
+      STORAGE_MINIO_REGION: us-east-1
       UPLOAD_MAX_SIZE: 10485760
       CLEANUP_INTERVAL: 86400000
 

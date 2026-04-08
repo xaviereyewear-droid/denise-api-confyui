@@ -40,9 +40,6 @@ LABEL description="API ComfyUI - Runtime image"
 
 WORKDIR /app
 
-# Instalar dumb-init para melhor signal handling
-RUN apk add --no-cache dumb-init
-
 # Copiar package.json (apenas runtime deps)
 COPY package*.json ./
 
@@ -58,6 +55,9 @@ COPY --from=builder /app/migrations ./migrations
 RUN mkdir -p /app/storage
 VOLUME /app/storage
 
+# Instalar dumb-init para melhor signal handling
+RUN apk add --no-cache dumb-init
+
 # Criar usuário não-root
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
@@ -72,9 +72,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', (r) => { \
     if (r.statusCode !== 200) throw new Error(r.statusCode); \
   }).on('error', () => { process.exit(1); })" || exit 1
-
-# Usar dumb-init para melhor signal handling
-ENTRYPOINT ["/usr/sbin/dumb-init", "--"]
 
 # Command
 CMD ["node", "dist/index.js"]
